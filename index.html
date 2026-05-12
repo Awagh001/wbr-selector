@@ -696,64 +696,117 @@ function spin() {
 
     const hitTeam = eligible[Math.floor(Math.random() * eligible.length)];
 
-    // Calculate the angle of the center of the winning segment
+    // Build an array of eligible segment center angles (where ball can visit)
     const n = teams.length;
     const arc = (2 * Math.PI) / n;
-    const teamIdx = teams.indexOf(hitTeam);
-    const targetAngle = arc * teamIdx - Math.PI / 2 + arc * (0.25 + Math.random() * 0.5);
+    const eligibleAngles = [];
+    for (let i = 0; i < n; i++) {
+        if (eligible.includes(teams[i])) {
+            eligibleAngles.push({
+                team: teams[i],
+                angle: arc * i - Math.PI / 2 + arc / 2,
+                idx: i,
+            });
+        }
+    }
 
-    // Ball starts at a random angle, makes several full loops + lands on target
-    const startAngle = Math.random() * 2 * Math.PI;
-    const totalSpin = (8 + Math.random() * 5) * 2 * Math.PI; // 8-13 full loops
-    const finalAngle = startAngle + totalSpin + ((targetAngle - startAngle) % (2 * Math.PI));
+    // The ball hops through eligible segments only
+    // Total hops: many fast ones, slowing down, ending on the winner
+    const winnerEntry = eligibleAngles.find(e => e.team === hitTeam);
+    const winnerPos = eligibleAngles.indexOf(winnerEntry);
+    const totalHops = 30 + Math.floor(Math.random() * 15); // 30-44 hops
+    // Build the hop sequence: cycle through eligible, ending on winner
+    const hopSequence = [];
+    let cursor = Math.floor(Math.random() * eligibleAngles.length);
+    for (let h = 0; h < totalHops; h++) {
+        // Last hop must land on winner
+        if (h === totalHops - 1) {
+            hopSequence.push(winnerEntry);
+        } else {
+            hopSequence.push(eligibleAngles[cursor % eligibleAngles.length]);
+            cursor++;
+        }
+    }
 
     const DURATION = 15000;
     const startTs = performance.now();
-    let prevSegIdx = -1;
+    let currentHop = -1;
 
-    // Audio tick using oscillator
+    // Audio tick
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    function tick() {
+    function tick(pitch) {
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain);
         gain.connect(audioCtx.destination);
-        osc.frequency.value = 800 + Math.random() * 400;
-        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+        osc.frequency.value = pitch;
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.06);
         osc.start(audioCtx.currentTime);
-        osc.stop(audioCtx.currentTime + 0.05);
+        osc.stop(audioCtx.currentTime + 0.06);
     }
 
-    function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+    // Timing: each hop gets progressively longer
+    // Use a power curve so early hops are fast, late hops are slow
+    const hopTimes = [];
+    let totalWeight = 0;
+    for (let h = 0; h < totalHops; h++) {
+        const w = 1 + Math.pow(h / totalHops, 3) * 12;
+        hopTimes.push(w);
+        totalWeight += w;
+    }
+    // Normalize to DURATION
+    const hopTimestamps = [0];
+    let cumulative = 0;
+    for (let h = 0; h < totalHops; h++) {
+        cumulative += (hopTimes[h] / totalWeight) * DURATION;
+        hopTimestamps.push(cumulative);
+    }
 
     function frame() {
         const elapsed = performance.now() - startTs;
-        const t = Math.min(elapsed / DURATION, 1);
-        const eased = easeOutQuart(t);
 
-        const currentAngle = startAngle + (finalAngle - startAngle) * eased;
-        ballAngle = currentAngle % (2 * Math.PI);
+        // Determine which hop we're on
+        let hopIdx = 0;
+        for (let h = 0; h < totalHops; h++) {
+            if (elapsed >= hopTimestamps[h]) hopIdx = h;
+        }
 
-        // Determine which segment the ball is over
-        const normAngle = ((ballAngle + Math.PI / 2) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-        const segIdx = Math.floor(normAngle / arc) % n;
+        // How far between current hop and next (for smooth interpolation)
+        const hopStart = hopTimestamps[hopIdx];
+        const hopEnd = hopTimestamps[Math.min(hopIdx + 1, totalHops)];
+        const hopDur = hopEnd - hopStart;
+        const hopT = hopDur > 0 ? Math.min((elapsed - hopStart) / hopDur, 1) : 1;
+        // Smooth step for the transition
+        const smooth = hopT * hopT * (3 - 2 * hopT);
 
-        // Tick sound when crossing segment boundary
-        if (segIdx !== prevSegIdx) {
-            prevSegIdx = segIdx;
-            tick();
-            // Flash highlight on current segment
-            highlightedTeam = teams[segIdx];
+        const curEntry = hopSequence[hopIdx];
+        const nextEntry = hopSequence[Math.min(hopIdx + 1, totalHops - 1)];
+
+        // Interpolate angle (handle wraparound)
+        let fromA = curEntry.angle;
+        let toA = nextEntry.angle;
+        let diff = toA - fromA;
+        if (diff > Math.PI) diff -= 2 * Math.PI;
+        if (diff < -Math.PI) diff += 2 * Math.PI;
+        ballAngle = fromA + diff * smooth;
+
+        // Tick when entering a new hop
+        if (hopIdx !== currentHop) {
+            currentHop = hopIdx;
+            highlightedTeam = curEntry.team;
+            const pitch = hopIdx === totalHops - 1 ? 1200 : 700 + Math.random() * 400;
+            tick(pitch);
         }
 
         draw();
 
-        if (t < 1) {
+        if (elapsed < DURATION) {
             requestAnimationFrame(frame);
         } else {
-            // Ball settled
+            // Settled
+            ballAngle = winnerEntry.angle;
             highlightedTeam = hitTeam;
             draw();
 
