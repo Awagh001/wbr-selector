@@ -377,6 +377,7 @@ const BOARD_R = Math.min(cx, cy) - 12;
 
 let animating = false;
 let ballAngle = null;
+let wheelRotation = 0;
 let highlightedTeam = null;
 
 /* ── Sync ────────────────────────────────────────── */
@@ -519,27 +520,30 @@ function draw() {
     const arc = (2 * Math.PI) / n;
     const eligible = getEligibleTeams();
 
-    // Outer rim (where ball rolls)
+    // Static outer rim track (doesn't spin)
     ctx.beginPath();
     ctx.arc(cx, cy, BOARD_R + 10, 0, 2 * Math.PI);
     ctx.fillStyle = '#1a1a1a';
     ctx.fill();
-
     ctx.beginPath();
     ctx.arc(cx, cy, BOARD_R + 10, 0, 2 * Math.PI);
     ctx.strokeStyle = '#FFD700';
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    // ── Rotating wheel (everything inside the rim) ──
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(wheelRotation);
+    ctx.translate(-cx, -cy);
+
     // Segment pockets along the rim
     for (let i = 0; i < n; i++) {
         const a1 = arc * i - Math.PI / 2;
         const a2 = a1 + arc;
-        const mid = a1 + arc / 2;
         const isEl = eligible.includes(teams[i]);
-
-        // Pocket notch on the rim
         const pocketR = BOARD_R + 6;
+
         ctx.beginPath();
         ctx.arc(cx, cy, pocketR, a1 + 0.02, a2 - 0.02);
         ctx.arc(cx, cy, BOARD_R - 2, a2 - 0.02, a1 + 0.02, true);
@@ -582,7 +586,6 @@ function draw() {
         ctx.fill();
         ctx.restore();
 
-        // Divider line
         ctx.beginPath();
         ctx.moveTo(cx, cy);
         ctx.lineTo(cx + Math.cos(a1) * (innerR - 2), cy + Math.sin(a1) * (innerR - 2));
@@ -607,7 +610,6 @@ function draw() {
         ctx.fillText(teams[i], 0, 0);
         ctx.restore();
 
-        // Lock icon
         if (!isEl) {
             ctx.save();
             ctx.globalAlpha = 0.5;
@@ -631,14 +633,15 @@ function draw() {
     ctx.strokeStyle = '#FFD700';
     ctx.lineWidth = 2.5;
     ctx.stroke();
-
     ctx.font = '700 10px "Segoe UI", sans-serif';
     ctx.fillStyle = '#FFD700';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('WBR', cx, cy);
 
-    // Draw ball if present
+    ctx.restore(); // end wheel rotation
+
+    // ── Ball (drawn in screen space, NOT rotated with the wheel) ──
     if (ballAngle !== null) drawBall(ballAngle);
 }
 
@@ -647,19 +650,16 @@ function drawBall(angle) {
     const bx = cx + Math.cos(angle) * ballR;
     const by = cy + Math.sin(angle) * ballR;
 
-    // Glow
     ctx.beginPath();
     ctx.arc(bx, by, 14, 0, 2 * Math.PI);
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.fill();
 
-    // Ball shadow
     ctx.beginPath();
     ctx.arc(bx + 1, by + 1, 9, 0, 2 * Math.PI);
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fill();
 
-    // Ball
     const ballGrad = ctx.createRadialGradient(bx - 2, by - 2, 1, bx, by, 9);
     ballGrad.addColorStop(0, '#ffffff');
     ballGrad.addColorStop(0.6, '#e0e0e0');
@@ -672,7 +672,6 @@ function drawBall(angle) {
     ctx.lineWidth = 0.8;
     ctx.stroke();
 
-    // Shine
     ctx.beginPath();
     ctx.arc(bx - 2, by - 3, 2.5, 0, 2 * Math.PI);
     ctx.fillStyle = 'rgba(255,255,255,0.7)';
@@ -696,43 +695,36 @@ function spin() {
 
     const hitTeam = eligible[Math.floor(Math.random() * eligible.length)];
 
-    // Build an array of eligible segment center angles (where ball can visit)
-    const n = teams.length;
+    const n   = teams.length;
     const arc = (2 * Math.PI) / n;
-    const eligibleAngles = [];
-    for (let i = 0; i < n; i++) {
-        if (eligible.includes(teams[i])) {
-            eligibleAngles.push({
-                team: teams[i],
-                angle: arc * i - Math.PI / 2 + arc / 2,
-                idx: i,
-            });
-        }
-    }
 
-    // The ball hops through eligible segments only
-    // Total hops: many fast ones, slowing down, ending on the winner
-    const winnerEntry = eligibleAngles.find(e => e.team === hitTeam);
-    const winnerPos = eligibleAngles.indexOf(winnerEntry);
-    const totalHops = 30 + Math.floor(Math.random() * 15); // 30-44 hops
-    // Build the hop sequence: cycle through eligible, ending on winner
-    const hopSequence = [];
-    let cursor = Math.floor(Math.random() * eligibleAngles.length);
-    for (let h = 0; h < totalHops; h++) {
-        // Last hop must land on winner
-        if (h === totalHops - 1) {
-            hopSequence.push(winnerEntry);
-        } else {
-            hopSequence.push(eligibleAngles[cursor % eligibleAngles.length]);
-            cursor++;
-        }
-    }
+    // Wheel spins clockwise, ball spins counter-clockwise
+    const wheelSpinTotal = (4 + Math.random() * 3) * 2 * Math.PI;   // 4-7 full CW turns
+    const ballSpinTotal  = (6 + Math.random() * 4) * 2 * Math.PI;   // 6-10 full CCW turns
+
+    // The ball's final angle in screen space must align with the winning segment
+    // accounting for where the wheel ends up
+    const teamIdx = teams.indexOf(hitTeam);
+    const segCenterBase = arc * teamIdx - Math.PI / 2 + arc * (0.25 + Math.random() * 0.5);
+
+    const wheelStartRot = wheelRotation;
+    const wheelEndRot   = wheelStartRot + wheelSpinTotal;
+
+    // Ball final screen angle = segment center in wheel space + wheel's final rotation
+    const ballFinalAngle = segCenterBase + wheelEndRot;
+
+    const ballStartAngle = Math.random() * 2 * Math.PI;
+    const ballEndAngle   = ballStartAngle - ballSpinTotal;
+    // Adjust so it ends on the right pocket
+    const rawEnd = ballEndAngle % (2 * Math.PI);
+    const targetEnd = ballFinalAngle % (2 * Math.PI);
+    const ballAdjust = targetEnd - rawEnd;
+    const ballTrueEnd = ballEndAngle + ballAdjust;
 
     const DURATION = 15000;
     const startTs = performance.now();
-    let currentHop = -1;
+    let prevSegIdx = -1;
 
-    // Audio tick
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     function tick(pitch) {
@@ -747,66 +739,34 @@ function spin() {
         osc.stop(audioCtx.currentTime + 0.06);
     }
 
-    // Timing: each hop gets progressively longer
-    // Use a power curve so early hops are fast, late hops are slow
-    const hopTimes = [];
-    let totalWeight = 0;
-    for (let h = 0; h < totalHops; h++) {
-        const w = 1 + Math.pow(h / totalHops, 3) * 12;
-        hopTimes.push(w);
-        totalWeight += w;
-    }
-    // Normalize to DURATION
-    const hopTimestamps = [0];
-    let cumulative = 0;
-    for (let h = 0; h < totalHops; h++) {
-        cumulative += (hopTimes[h] / totalWeight) * DURATION;
-        hopTimestamps.push(cumulative);
-    }
+    function easeOut(t) { return 1 - Math.pow(1 - t, 4); }
 
     function frame() {
         const elapsed = performance.now() - startTs;
+        const t = Math.min(elapsed / DURATION, 1);
+        const e = easeOut(t);
 
-        // Determine which hop we're on
-        let hopIdx = 0;
-        for (let h = 0; h < totalHops; h++) {
-            if (elapsed >= hopTimestamps[h]) hopIdx = h;
-        }
+        // Wheel rotates clockwise (positive)
+        wheelRotation = wheelStartRot + wheelSpinTotal * e;
 
-        // How far between current hop and next (for smooth interpolation)
-        const hopStart = hopTimestamps[hopIdx];
-        const hopEnd = hopTimestamps[Math.min(hopIdx + 1, totalHops)];
-        const hopDur = hopEnd - hopStart;
-        const hopT = hopDur > 0 ? Math.min((elapsed - hopStart) / hopDur, 1) : 1;
-        // Smooth step for the transition
-        const smooth = hopT * hopT * (3 - 2 * hopT);
+        // Ball rotates counter-clockwise in screen space
+        ballAngle = ballStartAngle + (ballTrueEnd - ballStartAngle) * e;
 
-        const curEntry = hopSequence[hopIdx];
-        const nextEntry = hopSequence[Math.min(hopIdx + 1, totalHops - 1)];
+        // Figure out which segment the ball is over (in wheel-local space)
+        const ballInWheel = ((ballAngle - wheelRotation + Math.PI / 2) % (2 * Math.PI) + 4 * Math.PI) % (2 * Math.PI);
+        const segIdx = Math.floor(ballInWheel / arc) % n;
 
-        // Interpolate angle (handle wraparound)
-        let fromA = curEntry.angle;
-        let toA = nextEntry.angle;
-        let diff = toA - fromA;
-        if (diff > Math.PI) diff -= 2 * Math.PI;
-        if (diff < -Math.PI) diff += 2 * Math.PI;
-        ballAngle = fromA + diff * smooth;
-
-        // Tick when entering a new hop
-        if (hopIdx !== currentHop) {
-            currentHop = hopIdx;
-            highlightedTeam = curEntry.team;
-            const pitch = hopIdx === totalHops - 1 ? 1200 : 700 + Math.random() * 400;
-            tick(pitch);
+        if (segIdx !== prevSegIdx) {
+            prevSegIdx = segIdx;
+            highlightedTeam = teams[segIdx];
+            tick(700 + Math.random() * 400);
         }
 
         draw();
 
-        if (elapsed < DURATION) {
+        if (t < 1) {
             requestAnimationFrame(frame);
         } else {
-            // Settled
-            ballAngle = winnerEntry.angle;
             highlightedTeam = hitTeam;
             draw();
 
