@@ -125,6 +125,63 @@
             cursor: not-allowed;
         }
 
+        /* Countdown / buildup overlay on the board */
+        .buildup-overlay {
+            position: absolute;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.7);
+            z-index: 20;
+            pointer-events: none;
+        }
+
+        .buildup-overlay.active { display: flex; }
+
+        .buildup-name {
+            font-size: 2.2rem;
+            font-weight: 900;
+            color: #FFD700;
+            letter-spacing: 4px;
+            text-shadow: 0 0 40px rgba(255,215,0,0.7);
+            min-height: 3rem;
+            transition: opacity 0.08s;
+        }
+
+        .buildup-timer {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: rgba(255,255,255,0.4);
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            margin-top: 0.6rem;
+        }
+
+        .buildup-bar-wrap {
+            margin-top: 0.8rem;
+            width: 60%;
+            height: 4px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .buildup-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #e74c3c, #FFD700);
+            border-radius: 3px;
+            transition: width 0.15s linear;
+        }
+
+        .board-container {
+            position: relative;
+            display: inline-block;
+        }
+
         .right-col {
             display: flex;
             flex-direction: column;
@@ -358,7 +415,14 @@
 
 <div class="main-layout">
     <div class="left-col">
-        <canvas id="dartCanvas" width="440" height="440"></canvas>
+        <div class="board-container">
+            <canvas id="dartCanvas" width="440" height="440"></canvas>
+            <div class="buildup-overlay" id="buildupOverlay">
+                <div class="buildup-name" id="buildupName"></div>
+                <div class="buildup-timer" id="buildupTimer"></div>
+                <div class="buildup-bar-wrap"><div class="buildup-bar" id="buildupBar"></div></div>
+            </div>
+        </div>
         <button class="throw-btn" id="throwBtn">THROW DART</button>
     </div>
 
@@ -578,6 +642,120 @@ function renderScoreboard() {
 
 /* ── Board drawing ───────────────────────────────── */
 function drawBoard(highlightTeam) {
+    ctx.clearRect(0, 0, W, H);
+    drawBoardInner(highlightTeam);
+}
+
+/* ── Dart ────────────────────────────────────────── */
+function drawDart(x, y) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI * 0.18);
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-28,-12); ctx.lineTo(-22,0); ctx.lineTo(-28,12);
+    ctx.closePath(); ctx.fillStyle = 'rgba(255,0,0,0.85)'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-20,-3); ctx.lineTo(-20,3);
+    ctx.closePath(); ctx.fillStyle = '#b0bec5'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(10,0);
+    ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke();
+    ctx.restore();
+}
+
+/* ── Color helpers ───────────────────────────────── */
+function hexToRgb(h) { return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
+function lighten(h, a) { const [r,g,b] = hexToRgb(h); return `rgb(${Math.min(255,r+a)},${Math.min(255,g+a)},${Math.min(255,b+a)})`; }
+
+/* ── Throw with 20s buildup ──────────────────────── */
+document.getElementById('throwBtn').addEventListener('click', throwDart);
+
+function throwDart() {
+    if (animating || teams.length < 2) return;
+    const eligible = getEligibleTeams();
+    if (eligible.length === 0) return;
+
+    animating = true; dart = null;
+    document.getElementById('throwBtn').disabled = true;
+
+    const hitTeam = eligible[Math.floor(Math.random() * eligible.length)];
+
+    // --- Phase 1: 20-second buildup with name cycling ---
+    const overlay  = document.getElementById('buildupOverlay');
+    const nameEl   = document.getElementById('buildupName');
+    const timerEl  = document.getElementById('buildupTimer');
+    const barEl    = document.getElementById('buildupBar');
+    overlay.classList.add('active');
+
+    const BUILDUP_MS = 20000;
+    const buildStart = performance.now();
+    let lastSwitch = 0;
+    let shownTeam  = '';
+
+    function buildupFrame(ts) {
+        const elapsed = ts - buildStart;
+        const progress = Math.min(elapsed / BUILDUP_MS, 1);
+
+        // Progress bar
+        barEl.style.width = (progress * 100) + '%';
+
+        // Timer countdown
+        const secsLeft = Math.ceil((BUILDUP_MS - elapsed) / 1000);
+        timerEl.textContent = progress < 1 ? `${secsLeft}s` : '';
+
+        // Name cycling: starts fast (~80ms), slows to ~600ms near the end
+        const interval = 80 + (progress * progress * 520);
+        if (elapsed - lastSwitch > interval) {
+            lastSwitch = elapsed;
+            // Pick a random team that isn't the one currently shown
+            const pool = teams.filter(t => t !== shownTeam);
+            // Near the end (last 2s), increasingly bias toward the real winner
+            if (progress > 0.9 && Math.random() < (progress - 0.9) * 8) {
+                shownTeam = hitTeam;
+            } else {
+                shownTeam = pool[Math.floor(Math.random() * pool.length)];
+            }
+            nameEl.textContent = shownTeam;
+            // Flash color
+            const idx = teams.indexOf(shownTeam);
+            nameEl.style.color = SEG_COLORS[idx % SEG_COLORS.length][0];
+        }
+
+        // Board spins during buildup
+        const spinSpeed = (1 - progress * progress) * 0.12;
+        boardRotation += spinSpeed;
+        drawBoardRotated(boardRotation);
+
+        if (progress < 1) {
+            requestAnimationFrame(buildupFrame);
+        } else {
+            // Freeze on winner name
+            nameEl.textContent = hitTeam;
+            const winIdx = teams.indexOf(hitTeam);
+            nameEl.style.color = '#FFD700';
+            timerEl.textContent = '';
+
+            // Hold for a beat then fade out and throw
+            setTimeout(() => {
+                overlay.classList.remove('active');
+                nameEl.style.color = '#FFD700';
+                boardRotation = 0;
+                launchDart(hitTeam);
+            }, 1200);
+        }
+    }
+
+    requestAnimationFrame(buildupFrame);
+}
+
+let boardRotation = 0;
+
+function drawBoardRotated(rot) {
+    ctx.save();
+    ctx.clearRect(0, 0, W, H);
+    ctx.translate(cx, cy);
+    ctx.rotate(rot);
+    ctx.translate(-cx, -cy);
+    drawBoardInner(null);
+    ctx.restore();
+}
+
+function drawBoardInner(highlightTeam) {
     const n   = teams.length;
     const arc = (2 * Math.PI) / n;
     const R   = Math.min(cx, cy) - 4;
@@ -589,7 +767,6 @@ function drawBoard(highlightTeam) {
         { r: R * 0.40, type: 'inner'  },
     ];
 
-    ctx.clearRect(0, 0, W, H);
     ctx.beginPath(); ctx.arc(cx, cy, R + 4, 0, 2 * Math.PI); ctx.fillStyle = '#111'; ctx.fill();
 
     const eligible = getEligibleTeams();
@@ -657,34 +834,8 @@ function drawBoard(highlightTeam) {
     if (dart) drawDart(dart.x, dart.y);
 }
 
-/* ── Dart ────────────────────────────────────────── */
-function drawDart(x, y) {
-    ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI * 0.18);
-    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-28,-12); ctx.lineTo(-22,0); ctx.lineTo(-28,12);
-    ctx.closePath(); ctx.fillStyle = 'rgba(255,0,0,0.85)'; ctx.fill();
-    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-20,-3); ctx.lineTo(-20,3);
-    ctx.closePath(); ctx.fillStyle = '#b0bec5'; ctx.fill();
-    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(10,0);
-    ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke();
-    ctx.restore();
-}
-
-/* ── Color helpers ───────────────────────────────── */
-function hexToRgb(h) { return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
-function lighten(h, a) { const [r,g,b] = hexToRgb(h); return `rgb(${Math.min(255,r+a)},${Math.min(255,g+a)},${Math.min(255,b+a)})`; }
-
-/* ── Throw ───────────────────────────────────────── */
-document.getElementById('throwBtn').addEventListener('click', throwDart);
-
-function throwDart() {
-    if (animating || teams.length < 2) return;
-    const eligible = getEligibleTeams();
-    if (eligible.length === 0) return;
-
-    animating = true; dart = null;
-    document.getElementById('throwBtn').disabled = true;
-
-    const hitTeam  = eligible[Math.floor(Math.random() * eligible.length)];
+// --- Phase 2: dart flies in after buildup ---
+function launchDart(hitTeam) {
     const n        = teams.length;
     const arc      = 2 * Math.PI / n;
     const teamIdx  = teams.indexOf(hitTeam);
@@ -696,7 +847,7 @@ function throwDart() {
     const landY    = cy + Math.sin(hitAngle) * dist;
 
     const startX = W + 60, startY = -60;
-    const duration = 420;
+    const duration = 500;
     let startTs = null;
 
     function easeOut(t) { return 1 - Math.pow(1 - t, 2.5); }
